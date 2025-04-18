@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.swp
+.vscode/
+.idea/
+.env
+*.log
+*.bak
+*.tmp
+*.egg-info/
+# OS generated
+Thumbs.db
+Desktop.ini
+# Jupyter
+.ipynb_checkpoints/
+# Test outputs
+*.out
+*.dat

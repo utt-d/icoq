@@ -1,0 +1,4 @@
+# requirements.txt
+pillow
+numpy
+matplotlib
