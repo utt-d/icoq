@@ -57,15 +57,17 @@ TRIANGLE_GRID_H = 16 # サンプル画像内の三角形グリッド縦数
 def get_triangle_local_coords_from_cpl(csv_path):
     import numpy as np
     global triangle_local_coords_side
-    # U1〜U36のtopレイヤー座標を抽出
-    led_xyz = []
+    # U1〜U36のtopレイヤー座標とDesignator番号を抽出
+    # --- U1〜U36をDesignator番号順にソートして抽出 ---
     with open(csv_path, newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            if row['Layer'].strip() == 'top' and row['Designator'].startswith('U'):
-                x = float(row['Mid X'])
-                y = float(row['Mid Y'])
-                led_xyz.append((x, y))
+        rows = [
+            row for row in reader
+            if row['Layer'].strip() == 'top' and row['Designator'].startswith('U')
+        ]
+        rows.sort(key=lambda r: int(r['Designator'][1:]))
+        led_xyz = [(float(row['Mid X']), float(row['Mid Y'])) for row in rows]
+        led_designators = [row['Designator'] for row in rows]
     if len(led_xyz) != 36:
         raise ValueError('topレイヤーU1〜U36が36個ありません')
     # 三角形の重心・一辺長・基準角度を取得
@@ -78,16 +80,16 @@ def get_triangle_local_coords_from_cpl(csv_path):
     # ローカル正規化座標(u,v)生成
     local_coords = []
     for x, y in led_xyz:
-        # 三角形を重心(cx,cy)中心、1辺=1、上向きに正規化
         dx = x - cx
         dy = y - cy
-        # x軸を水平方向、y軸を上向きと仮定
-        u = 0.5 + dx / side
+        u = 0.5 - dx / side  # u成分を反転
         v = 0.5 + dy / (side * np.sqrt(3)/2)
         local_coords.append([u, v])
-    return np.array(local_coords)
+    return np.array(local_coords), led_designators
 
-triangle_local_coords = get_triangle_local_coords_from_cpl('tools/CPL-triangle_led5.csv')
+
+triangle_local_coords, triangle_led_designators = get_triangle_local_coords_from_cpl('tools/CPL-triangle_led5.csv')
+
 
 # 画像内で三角形ごとのエリアからLEDに対応するピクセルを取得する関数
 
@@ -399,11 +401,16 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
             led_ys.append(pt3d[1])
             led_zs.append(pt3d[2])
             img_x, img_y = get_image_pixel_for_led(seg, tri, led)
+            # 物理LEDインデックスでHSVグラデーション色を付与
+            import colorsys
+            hue = led / float(LEDS_PER_TRIANGLE)
+            grad_color = np.array(colorsys.hsv_to_rgb(hue, 1.0, 1.0))
             if 0 <= img_y < img.shape[0] and 0 <= img_x < img.shape[1]:
-                color = img[img_y, img_x] / 255.0
+                base_color = img[img_y, img_x] / 255.0
             else:
-                color = np.array([0.0, 0.0, 0.0])
-            color = color ** 2.0
+                base_color = np.array([0.0, 0.0, 0.0])
+            # 画像色とグラデーション色を掛け合わせて可視化
+            color = (base_color * grad_color) ** 2.0
             led_colors.append(color)
         fig = plt.figure(figsize=(8,8))
         ax = fig.add_subplot(111, projection='3d')
@@ -411,6 +418,11 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
         alphas = 0.15 + 0.85 * (zs - zs.min())/(zs.max() - zs.min() + 1e-8)
         led_rgba = [np.append(c, a) for c, a in zip(led_colors, alphas)]
         ax.scatter(led_xs, led_ys, led_zs, c=led_rgba, s=18, edgecolors='k', linewidths=0.5, depthshade=True)
+        # --- 各LEDに物理インデックス番号ラベルを表示 ---
+        for i, (x, y, z) in enumerate(zip(led_xs, led_ys, led_zs)):
+            led_label = triangle_led_designators[i % LEDS_PER_TRIANGLE] if 'triangle_led_designators' in globals() else str(i % LEDS_PER_TRIANGLE)
+            ax.text(x, y, z, led_label, color='black', fontsize=12, ha='center', va='center')
+
         # --- 各基板（三角形）にtriangle_idの数字ラベルを表示 ---
         # triangle_layout_dict: triangle_id→dict
         for triangle_id, tri_layout in triangle_layout_dict.items():
@@ -534,7 +546,18 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
             fidx, subidx = row  # (face, sub)
             subtri3d = face_subtris_dict[fidx][subidx]
             all_subtris.append((fidx, subidx, subtri3d, tri_layout, triangle_id))
+        # --- triangle_3d_orient_correction.csvがあればtriangle_idごとに角度補正 ---
+        orient_correction_csv = 'tools/triangle_3d_orient_correction.csv'
+        orient_correction = {}
+        if os.path.exists(orient_correction_csv):
+            with open(orient_correction_csv, newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    angle_key = 'angle_deg' if 'angle_deg' in row else ('correction_deg' if 'correction_deg' in row else None)
+                    if row.get('triangle_id') and angle_key:
+                        orient_correction[int(row['triangle_id'])] = float(row[angle_key])
         triangle_id_to_affine = {}
+        triangle_id_to_theta_deg = {}
         side = triangle_local_coords_side
         for subtris_idx, (fidx, subidx, subtri3d, tri_layout, triangle_id) in enumerate(all_subtris):
             tri2d_pts = np.array([
@@ -542,6 +565,21 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
                 [-0.5*side, -0.5*side/np.sqrt(3)],
                 [0.5*side, -0.5*side/np.sqrt(3)]
             ])
+            # triangle_idごとの角度補正（deg）
+            # correction_degがあればそれを絶対角度として使う、なければtri_layout['angle']を使う
+            if triangle_id in orient_correction:
+                theta_deg = orient_correction[triangle_id]
+                print(f"[DEBUG] triangle_id={triangle_id}: correction_deg (from CSV) = {theta_deg}")
+            else:
+                theta_deg = tri_layout.get('angle', 0.0)
+                print(f"[DEBUG] triangle_id={triangle_id}: angle (from layout) = {theta_deg}")
+            theta = np.deg2rad(theta_deg)
+            rot2d = np.array([
+                [np.cos(theta), -np.sin(theta)],
+                [np.sin(theta),  np.cos(theta)]
+            ])
+            tri2d_pts = tri2d_pts @ rot2d.T
+
             subtri3d_pts = np.zeros_like(subtri3d)
             z_vals = subtri3d[:,2]
             idx_top = np.argmax(z_vals)
@@ -556,12 +594,19 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
             subtri3d_pts[0] = subtri3d[idx_top]
             subtri3d_pts[1] = subtri3d[idx_left]
             subtri3d_pts[2] = subtri3d[idx_right]
+            # --- 反転対策: 3D三角形が時計回り(CW)なら左右を入れ替える ---
+            v1 = subtri3d_pts[1] - subtri3d_pts[0]
+            v2 = subtri3d_pts[2] - subtri3d_pts[0]
+            cross = np.cross(v1, v2)
+            if cross[2] > 0:
+                subtri3d_pts[1], subtri3d_pts[2] = subtri3d_pts[2].copy(), subtri3d_pts[1].copy()
             A, _, _, _ = np.linalg.lstsq(
                 np.hstack([tri2d_pts, np.ones((3,1))]),
                 subtri3d_pts,
                 rcond=None
             )
             triangle_id_to_affine[triangle_id] = A
+            triangle_id_to_theta_deg[triangle_id] = theta_deg
         led_xs, led_ys, led_zs, led_colors = [], [], [], []
         triangle_led_physical_index = []
         for seg in range(NUM_PORTS):
@@ -592,11 +637,16 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
             led_ys.append(pt3d[1])
             led_zs.append(pt3d[2])
             img_x, img_y = get_image_pixel_for_led(seg, tri, led)
+            # 物理LEDインデックスでHSVグラデーション色を付与
+            import colorsys
+            hue = led / float(LEDS_PER_TRIANGLE)
+            grad_color = np.array(colorsys.hsv_to_rgb(hue, 1.0, 1.0))
             if 0 <= img_y < img.shape[0] and 0 <= img_x < img.shape[1]:
-                color = img[img_y, img_x] / 255.0
+                base_color = img[img_y, img_x] / 255.0
             else:
-                color = np.array([0.0, 0.0, 0.0])
-            color = color ** 2.0
+                base_color = np.array([0.0, 0.0, 0.0])
+            # 画像色とグラデーション色を掛け合わせて可視化
+            color = (base_color * grad_color) ** 2.0
             led_colors.append(color)
         fig = plt.figure(figsize=(8,8))
         ax = fig.add_subplot(111, projection='3d')
@@ -604,6 +654,11 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
         alphas = 0.15 + 0.85 * (zs - zs.min())/(zs.max() - zs.min() + 1e-8)
         led_rgba = [np.append(c, a) for c, a in zip(led_colors, alphas)]
         ax.scatter(led_xs, led_ys, led_zs, c=led_rgba, s=18, edgecolors='k', linewidths=0.5, depthshade=True)
+        # --- 各LEDに物理インデックス番号ラベルを表示 ---
+        for i, (x, y, z) in enumerate(zip(led_xs, led_ys, led_zs)):
+            led_label = triangle_led_designators[i % LEDS_PER_TRIANGLE] if 'triangle_led_designators' in globals() else str(i % LEDS_PER_TRIANGLE)
+            ax.text(x, y, z, led_label, color='black', fontsize=12, ha='center', va='center')
+
         # --- 各基板（三角形）にtriangle_idの数字ラベルを表示（常に水平） ---
         for triangle_id, tri_layout in triangle_layout_dict.items():
             if triangle_id not in triangle_id_to_affine:
@@ -611,19 +666,29 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
             A = triangle_id_to_affine[triangle_id]
             pt2d = np.array([0, 0, 1.0])
             pt3d = pt2d @ A
-            # ラベルは常に水平（rotation=0）
-            ax.text(pt3d[0], pt3d[1], pt3d[2], str(triangle_id), color='red', fontsize=12, ha='center', va='center', rotation=0)
+            # triangle_idをmagenta色でラベル表示（デバッグ用）
+            ax.text(pt3d[0], pt3d[1], pt3d[2], f"ID:{triangle_id}", color='magenta', fontsize=14, ha='center', va='center', rotation=0)
+
             # --- 基板の物理的な向きを矢印で描画 ---
             if label_orient:
-                # 基板の「上方向」（2D三角形の上辺の法線方向）を3D変換
-                # 2Dで原点から上方向へ短いベクトル
-                vec2d = np.array([0, 0.5 * triangle_local_coords_side / np.sqrt(3), 0])
+                theta_deg = triangle_id_to_theta_deg[triangle_id]  # アフィン変換と完全一致させる
+                # 基板の「上方向」を「中心→U15」方向に修正
+                # 三角形中心（ローカル[0,0,1]）
                 pt2d_base = np.array([0, 0, 1.0])
-                pt2d_tip = np.array([vec2d[0], vec2d[1], 1.0])
                 pt3d_base = pt2d_base @ A
+                # U15方向ローカルベクトル（中心→U15）
+                center_uv = np.mean(triangle_local_coords, axis=0)
+                u15_uv = triangle_local_coords[14]
+                vec2d_uv = u15_uv - center_uv
+                vec2d_xy = vec2d_uv * side
+                pt2d_tip = np.array([vec2d_xy[0], vec2d_xy[1], 1.0])
                 pt3d_tip = pt2d_tip @ A
+                # デバッグ出力: U15方向ベクトル
+                vec3d = pt3d_tip - pt3d_base
+                print(f"[DEBUG] triangle_id={triangle_id} theta_deg={theta_deg} U15_vec3d={vec3d}")
                 # 矢印を描画
                 ax.plot([pt3d_base[0], pt3d_tip[0]], [pt3d_base[1], pt3d_tip[1]], [pt3d_base[2], pt3d_tip[2]], color='blue', linewidth=1.2)
+
         for (i0, i1, i2) in faces:
             v0, v1, v2 = np.array(vertices[i0]), np.array(vertices[i1]), np.array(vertices[i2])
             ax.plot([v0[0], v1[0]], [v0[1], v1[1]], [v0[2], v1[2]], color='gray', linewidth=0.8)
