@@ -82,7 +82,8 @@ def get_triangle_local_coords_from_cpl(csv_path):
     for x, y in led_xyz:
         dx = x - cx
         dy = y - cy
-        u = 0.5 - dx / side  # u成分を反転
+        # x軸を水平方向、y軸を上向きと仮定
+        u = 0.5 + dx / side
         v = 0.5 + dy / (side * np.sqrt(3)/2)
         local_coords.append([u, v])
     return np.array(local_coords), led_designators
@@ -138,7 +139,7 @@ def get_led_abs_pos(triangle, led, led_positions, triangle_local_coords):
     # 平行移動
     return center['cx'] + rx, center['cy'] + ry
 
-def show_led_physical_emulation(img, mode="physical", label_orient=False):
+def show_led_physical_emulation(img, mode="physical", label_orient=False, show_ports=False, show_designators=False, show_triangle_ids=False, show_frame=False):
     global csv
     led_xs = []
     led_ys = []
@@ -458,7 +459,7 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
         plt.show()
         return
 
-def show_led_physical_emulation(img, mode="physical", label_orient=False):
+def show_led_physical_emulation(img, mode="physical", label_orient=False, show_ports=False, show_designators=False, show_triangle_ids=False, show_frame=False):
     """
     LED物理配置エミュレーション表示。
     mode: "physical"/"2d"/"3d"
@@ -517,7 +518,7 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
         else:
             print(f"[WARN] {assign_csv} not found. Using default assignment.")
             idx = 0
-            for face in range(4):
+            for face in range(20):
                 for sub in range(4):
                     tid = idx + 1
                     face_sub_to_id[(face, sub)] = tid
@@ -653,52 +654,63 @@ def show_led_physical_emulation(img, mode="physical", label_orient=False):
         zs = np.array(led_zs)
         alphas = 0.15 + 0.85 * (zs - zs.min())/(zs.max() - zs.min() + 1e-8)
         led_rgba = [np.append(c, a) for c, a in zip(led_colors, alphas)]
-        ax.scatter(led_xs, led_ys, led_zs, c=led_rgba, s=18, edgecolors='k', linewidths=0.5, depthshade=True)
-        # --- 各LEDに物理インデックス番号ラベルを表示 ---
+        ax.scatter(led_xs, led_ys, led_zs, c=led_rgba, s=20, edgecolors='k', linewidths=0.5, depthshade=True)
+
+        # --- 各LEDに物理インデックス番号ラベルやデジグネータ・ポート番号を表示 ---
         for i, (x, y, z) in enumerate(zip(led_xs, led_ys, led_zs)):
-            led_label = triangle_led_designators[i % LEDS_PER_TRIANGLE] if 'triangle_led_designators' in globals() else str(i % LEDS_PER_TRIANGLE)
-            ax.text(x, y, z, led_label, color='black', fontsize=12, ha='center', va='center')
+            seg, tri, led = led_map[i]
+            labels = []
+            if show_ports:
+                labels.append(f"P{seg+1}")
+            if show_designators and 'triangle_led_designators' in globals():
+                labels.append(triangle_led_designators[led])
+            if labels:
+                ax.text(x, y, z, "\n".join(labels), color='black', fontsize=10, ha='center', va='center')
 
         # --- 各基板（三角形）にtriangle_idの数字ラベルを表示（常に水平） ---
-        for triangle_id, tri_layout in triangle_layout_dict.items():
-            if triangle_id not in triangle_id_to_affine:
-                continue
-            A = triangle_id_to_affine[triangle_id]
-            pt2d = np.array([0, 0, 1.0])
-            pt3d = pt2d @ A
-            # triangle_idをmagenta色でラベル表示（デバッグ用）
-            ax.text(pt3d[0], pt3d[1], pt3d[2], f"ID:{triangle_id}", color='magenta', fontsize=14, ha='center', va='center', rotation=0)
+        if show_triangle_ids:
+            for triangle_id, tri_layout in triangle_layout_dict.items():
+                if triangle_id not in triangle_id_to_affine:
+                    continue
+                A = triangle_id_to_affine[triangle_id]
+                pt2d = np.array([0, 0, 1.0])
+                pt3d = pt2d @ A
+                # triangle_idをmagenta色でラベル表示
+                ax.text(pt3d[0], pt3d[1], pt3d[2], f"ID:{triangle_id}", color='magenta', fontsize=14, ha='center', va='center', rotation=0)
 
-            # --- 基板の物理的な向きを矢印で描画 ---
-            if label_orient:
-                theta_deg = triangle_id_to_theta_deg[triangle_id]  # アフィン変換と完全一致させる
-                # 基板の「上方向」を「中心→U15」方向に修正
-                # 三角形中心（ローカル[0,0,1]）
-                pt2d_base = np.array([0, 0, 1.0])
-                pt3d_base = pt2d_base @ A
-                # U15方向ローカルベクトル（中心→U15）
-                center_uv = np.mean(triangle_local_coords, axis=0)
-                u15_uv = triangle_local_coords[14]
-                vec2d_uv = u15_uv - center_uv
-                vec2d_xy = vec2d_uv * side
-                pt2d_tip = np.array([vec2d_xy[0], vec2d_xy[1], 1.0])
-                pt3d_tip = pt2d_tip @ A
-                # デバッグ出力: U15方向ベクトル
-                vec3d = pt3d_tip - pt3d_base
-                print(f"[DEBUG] triangle_id={triangle_id} theta_deg={theta_deg} U15_vec3d={vec3d}")
-                # 矢印を描画
-                ax.plot([pt3d_base[0], pt3d_tip[0]], [pt3d_base[1], pt3d_tip[1]], [pt3d_base[2], pt3d_tip[2]], color='blue', linewidth=1.2)
+                # --- 基板の物理的な向きを矢印で描画 ---
+                if label_orient:
+                    theta_deg = triangle_id_to_theta_deg[triangle_id]  # アフィン変換と完全一致させる
+                    # 基板の「上方向」を「中心→U15」方向に修正
+                    # 三角形中心（ローカル[0,0,1]）
+                    pt2d_base = np.array([0, 0, 1.0])
+                    pt3d_base = pt2d_base @ A
+                    # U15方向ローカルベクトル（中心→U15）
+                    center_uv = np.mean(triangle_local_coords, axis=0)
+                    u15_uv = triangle_local_coords[14]
+                    vec2d_uv = u15_uv - center_uv
+                    vec2d_xy = vec2d_uv * side
+                    pt2d_tip = np.array([vec2d_xy[0], vec2d_xy[1], 1.0])
+                    pt3d_tip = pt2d_tip @ A
+                    # デバッグ出力: U15方向ベクトル
+                    vec3d = pt3d_tip - pt3d_base
+                    print(f"[DEBUG] triangle_id={triangle_id} theta_deg={theta_deg} U15_vec3d={vec3d}")
+                    # 矢印を描画
+                    ax.plot([pt3d_base[0], pt3d_tip[0]], [pt3d_base[1], pt3d_tip[1]], [pt3d_base[2], pt3d_tip[2]], color='blue', linewidth=1.2)
 
-        for (i0, i1, i2) in faces:
-            v0, v1, v2 = np.array(vertices[i0]), np.array(vertices[i1]), np.array(vertices[i2])
-            ax.plot([v0[0], v1[0]], [v0[1], v1[1]], [v0[2], v1[2]], color='gray', linewidth=0.8)
-            ax.plot([v1[0], v2[0]], [v1[1], v2[1]], [v1[2], v2[2]], color='gray', linewidth=0.8)
-            ax.plot([v2[0], v0[0]], [v2[1], v0[1]], [v2[2], v0[2]], color='gray', linewidth=0.8)
+        # --- イコサヘドロンフレームの描画（オプション） ---
+        if show_frame:
+            for (i0, i1, i2) in faces:
+                v0, v1, v2 = np.array(vertices[i0]), np.array(vertices[i1]), np.array(vertices[i2])
+                ax.plot([v0[0], v1[0]], [v0[1], v1[1]], [v0[2], v1[2]], color='gray', linewidth=0.8)
+                ax.plot([v1[0], v2[0]], [v1[1], v2[1]], [v1[2], v2[2]], color='gray', linewidth=0.8)
+                ax.plot([v2[0], v0[0]], [v2[1], v0[1]], [v2[2], v0[2]], color='gray', linewidth=0.8)
         set_axes_equal(ax)
         try:
             ax.set_box_aspect([1,1,1])
         except Exception:
             pass
+
         ax.set_axis_off()
         ax.set_title('Icosahedron (20 faces) LED Layout Emulator')
         plt.tight_layout()
@@ -743,9 +755,18 @@ if __name__ == '__main__':
     parser.add_argument('imgfile')
     parser.add_argument('--mode', default='physical', choices=['physical','2d','3d'])
     parser.add_argument('--label_orient', action='store_true', help='基板角度に合わせて数字ラベルを回転')
+    parser.add_argument('--show_ports', action='store_true', help='LEDポート番号を表示')
+    parser.add_argument('--show_designators', action='store_true', help='LEDデジグネータ(接続順)を表示')
+    parser.add_argument('--show_triangle_ids', action='store_true', help='三角形IDを表示')
+    parser.add_argument('--show_frame', action='store_true', help='イコサヘドロンフレームを表示')
     args = parser.parse_args()
     if args.imgfile.endswith('.h'):
         img = load_c_array_image(args.imgfile)
     else:
         img = load_raw_rgb_image(args.imgfile)
-    show_led_physical_emulation(img, mode=args.mode, label_orient=args.label_orient)
+    show_led_physical_emulation(img, mode=args.mode, label_orient=args.label_orient,
+                               show_ports=args.show_ports,
+                               show_designators=args.show_designators,
+                               show_triangle_ids=args.show_triangle_ids,
+                               show_frame=args.show_frame)
+

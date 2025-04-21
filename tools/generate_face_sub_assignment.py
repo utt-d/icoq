@@ -2,14 +2,18 @@ import csv
 import os
 
 # デフォルト値（面数・サブ数・基板ID範囲）
-NUM_FACES = 16 # 必要に応じて20に変更
+NUM_FACES = 20 # 必要に応じて20に変更
 NUM_SUBS = 4
 START_ID = 1
 
 # 任意の順番でtriangle_idを割り当てたい場合は、下記リストに指定
 # 例: [5,3,1,2,4,6,7,8,9,10,11,12,13,14,15,16]
 # 空リストの場合は昇順で自動割当
-TRIANGLE_ID_ORDER = [1, 16, 3, 2, 4, 15, 13, 14, 12, 7, 5, 6, 9, 8, 11, 10]  # ←ここに任意の順を指定
+TRIANGLE_ID_ORDER_BASE = [1, 16, 3, 2, 4, 15, 13, 14, 12, 7, 5, 6, 9, 8, 11, 10]
+TRIANGLE_ID_ORDER = []
+for offset in range(0, 80, 16):
+    TRIANGLE_ID_ORDER.extend([x + offset for x in TRIANGLE_ID_ORDER_BASE])
+# これでID1～80まで16ごとに同じ並びが繰り返されます
 
 # 出力ファイル名
 ASSIGN_CSV = 'tools/face_sub_assignment.csv'
